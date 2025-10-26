@@ -48,13 +48,13 @@ import os
 # Jeśli jest MEMFS (RAM disk), użyj go; inaczej standardowy SCRATCH
 SCRATCH = os.environ.get("MEMFS", os.environ.get("SCRATCH", "/tmp"))
 HF_CACHE = os.path.join(SCRATCH, "huggingface_cache")
-DATASET_DIR = os.path.join(SCRATCH, "ravdess")
+DATASET_DIR = os.path.join(SCRATCH, "iemocap")
 #OUTPUT_DIR = os.path.join(SCRATCH, "wav2vec2_checkpoints")
-DATASET_DIR2 = os.path.join("/net/tscratch/people/plgmarbar/", "ravdess")
+DATASET_DIR2 = os.path.join("/net/tscratch/people/plgmarbar/", "iemocap")
 # Ścieżka do folderu z danymi (rozpakowany ZIP)
-RAVDESS_DIR = os.path.join("/net/tscratch/people/plgmarbar/ravdess", "ravdess_audio_only")
-CSV_PATH = os.path.join(RAVDESS_DIR, "ravdess_metadata_clean.csv")
-OUTPUT_DIR = os.path.join("/net/tscratch/people/plgmarbar/ravdess", "wav2vec2_checkpoints")
+RAVDESS_DIR = os.path.join("/net/tscratch/people/plgmarbar/iemocap", "imeocap_data")
+CSV_PATH = os.path.join(RAVDESS_DIR, "metadata.csv")
+OUTPUT_DIR = os.path.join("/net/tscratch/people/plgmarbar/iemocap", "wav2vec2_checkpoints")
 OUTPUT_DIR_PERSISTENT=OUTPUT_DIR
 os.makedirs(OUTPUT_DIR_PERSISTENT, exist_ok=True)
 
