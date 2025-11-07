@@ -52,9 +52,9 @@ DATASET_DIR = os.path.join(SCRATCH, "iemocap")
 #OUTPUT_DIR = os.path.join(SCRATCH, "wav2vec2_checkpoints")
 DATASET_DIR2 = os.path.join("/net/tscratch/people/plgmarbar/", "iemocap")
 # Ścieżka do folderu z danymi (rozpakowany ZIP)
-RAVDESS_DIR = os.path.join("/net/tscratch/people/plgmarbar/iemocap", "imeocap_data")
+RAVDESS_DIR = os.path.join("/net/tscratch/people/plgmarbar/iemocap_4", "iemocap_data_4_emotions")
 CSV_PATH = os.path.join(RAVDESS_DIR, "metadata.csv")
-OUTPUT_DIR = os.path.join("/net/tscratch/people/plgmarbar/iemocap", "wav2vec2_checkpoints")
+OUTPUT_DIR = os.path.join("/net/tscratch/people/plgmarbar/iemocap_4", "wav2vec2_checkpoints")
 OUTPUT_DIR_PERSISTENT=OUTPUT_DIR
 os.makedirs(OUTPUT_DIR_PERSISTENT, exist_ok=True)
 
@@ -199,69 +199,67 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"[INFO] Using local dataset from: {RAVDESS_DIR}")
 print(f"[INFO] Loading metadata from: {CSV_PATH}")
 
-# Wczytaj DataFrame
 df = pd.read_csv(CSV_PATH)
- 
-df["label_id"] = df["label_id"].replace({9: 8})
-print("[INFO] Class distribution after merging:")
+
+# Podgląd danych
+print(df.head())
+print(f"[INFO] Liczba próbek: {len(df)}")
+
+# =========================================================
+# 3️⃣ Zdefiniuj emocje (tylko 4 klasy)
+# =========================================================
+emotions = ["neutral", "happy", "sad", "disgust"]
+
+# Mapowanie etykiet tekstowych na ID
+label2id = {emotion: idx for idx, emotion in enumerate(emotions)}
+id2label = {idx: emotion for emotion, idx in label2id.items()}
+
+# Dodaj kolumnę numeryczną
+df["label_id"] = df["emotion"].map(label2id)
+
+# Sprawdź, czy wszystko się zmapowało poprawnie
+if df["label_id"].isna().any():
+    missing = df[df["label_id"].isna()]
+    print(f"[WARNING] Nie udało się zmapować niektórych etykiet:\n{missing['emotion'].unique()}")
+
+print("\n[INFO] Mappings:")
+for k, v in label2id.items():
+    print(f"  {k} -> {v}")
+
+print("\n[INFO] Rozkład klas:")
 print(df["label_id"].value_counts())
 
 # =========================================================
-# 3️⃣ Define emotion list (fixed label order)
+# 4️⃣ Podział na zbiory train / val / test
 # =========================================================
-emotions = ['neutral', 'frustrated', 'angry', 'sad', 'happy', 'excited', 'surprise', 'fear', 'other']
+train_df, temp_df = train_test_split(
+    df, test_size=0.3, stratify=df["label_id"], random_state=42
+)
+val_df, test_df = train_test_split(
+    temp_df, test_size=0.5, stratify=temp_df["label_id"], random_state=42
+)
 
-# Create mapping dictionaries
-label2id = {emotion: idx for idx, emotion in enumerate(emotions)}
-id2label = {idx: emotion for idx, emotion in enumerate(emotions)}
-
-print("[INFO] Label mappings:")
-for k, v in label2id.items():
-    print(f"  {k}: {v}")
+print(f"\n[INFO] Train/Val/Test sizes: {len(train_df)} / {len(val_df)} / {len(test_df)}")
 
 # =========================================================
-# 4️⃣ (Optional) Sanity check
+# 5️⃣ Konwersja Pandas → HuggingFace Dataset
 # =========================================================
-# Ensure that all values in df["label_id"] are valid
-invalid_labels = set(df["label_id"]) - set(label2id.values())
-if invalid_labels:
-    print(f"[WARNING] Found invalid label IDs in CSV: {invalid_labels}")
-else:
-    print("[INFO] All label IDs match the defined emotion mapping.")
-# Podział danych
-train_df, temp_df = train_test_split(df, test_size=0.3, stratify=df["label_id"], random_state=42)
-val_df, test_df = train_test_split(temp_df, test_size=0.5, stratify=temp_df["label_id"], random_state=42)
-
-print(f"[INFO] Train/Val/Test sizes: {len(train_df)} / {len(val_df)} / {len(test_df)}")
-
-# Konwersja Pandas → HuggingFace Dataset
 def df_to_hf_dataset(df, base_dir):
-
     df = df.copy()
-	
-    def make_new_path(x):
-        # zamień backslash na slash, żeby łatwiej dzielić
-        x = x.replace("\\", "/")
-        parts = x.split("/")  # podziel ścieżkę po slashach
-        base_name = parts[-2] # ostatni folder
-        file_name = parts[-1] # nazwa pliku
-        new_path = os.path.join(base_dir, base_name, file_name)
-        return new_path.replace("\\", "/")
-
-
-    df["full_path"] = df["audio"].apply(make_new_path)
-
+    df["full_path"] = df["filename"].apply(lambda x: os.path.join(base_dir, x).replace("\\", "/"))
+    
     ds = Dataset.from_pandas(df[["full_path", "label_id"]])
     ds = ds.rename_column("full_path", "audio")
     ds = ds.rename_column("label_id", "label")
     ds = ds.cast_column("audio", Audio(sampling_rate=16000))
     return ds
-    
 RAVDESS_DIR2 = "/net/tscratch/people/plgmarbar/ravdess"
-
 train_ds = df_to_hf_dataset(train_df, RAVDESS_DIR)
 val_ds = df_to_hf_dataset(val_df, RAVDESS_DIR)
 test_ds = df_to_hf_dataset(test_df, RAVDESS_DIR)
+
+print("\n✅ Hugging Face Dataset ready:")
+    
 
 print("[INFO] HuggingFace Datasets created successfully:")
 print(f"  Train: {len(train_ds)} samples")
