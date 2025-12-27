@@ -54,7 +54,7 @@ DATASET_DIR2 = os.path.join("/net/tscratch/people/plgmarbar/", "iemocap")
 # Ścieżka do folderu z danymi (rozpakowany ZIP)
 RAVDESS_DIR = os.path.join("/net/tscratch/people/plgmarbar/iemocap_4", "iemocap_data_4_emotions")
 CSV_PATH = os.path.join(RAVDESS_DIR, "metadata.csv")
-OUTPUT_DIR = os.path.join("/net/tscratch/people/plgmarbar/iemocap_4", "wav2vec2_checkpoints")
+OUTPUT_DIR = os.path.join("/net/tscratch/people/plgmarbar/iemocap_4", "wav2vec2_checkpoints_roccurve")
 OUTPUT_DIR_PERSISTENT=OUTPUT_DIR
 os.makedirs(OUTPUT_DIR_PERSISTENT, exist_ok=True)
 
@@ -175,7 +175,66 @@ def compute_ser_metrics(y_true, y_pred, y_score, labels=None):
         "confusion_matrix": {"labels": labels, "matrix": cm.tolist()},
     }
     return metrics
+from transformers import TrainerCallback
+import os
+import numpy as np
+from sklearn.metrics import balanced_accuracy_score
 
+class BestEpochRocCollector(TrainerCallback):
+    def __init__(self, trainer, dataset_dict, save_dir):
+        self.trainer = trainer
+        self.dataset_dict = dataset_dict
+        self.save_dir = save_dir
+        os.makedirs(self.save_dir, exist_ok=True)
+        self.best_bal_acc = -1
+        self.best_epoch_data = None
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        epoch = int(state.epoch)
+
+        # Balanced Accuracy z eval (Trainer sam dostarcza metryki)
+        bal_acc = metrics.get("balanced_accuracy", None)
+        if bal_acc is None:
+            return control
+
+        # Jeśli ta epoka jest najlepsza → zapisujemy predykcje
+        if bal_acc > self.best_bal_acc:
+            print(f"[BEST EPOCH UPDATE] epoch={epoch}  bal_acc={bal_acc:.4f}")
+
+            self.best_bal_acc = bal_acc
+
+            preds = self.trainer.predict(self.dataset_dict["validation"])
+            logits = preds.predictions
+            labels = preds.label_ids
+
+            self.best_epoch_data = {
+                "epoch": epoch,
+                "labels": labels,
+                "logits": logits,
+                "balanced_accuracy": float(bal_acc),
+            }
+
+        return control
+
+    def save_best(self):
+        """Zapis danych najlepszej epoki po treningu"""
+        if self.best_epoch_data is None:
+            return
+
+        np.save(os.path.join(self.save_dir, f"best_logits.npy"), self.best_epoch_data["logits"])
+        np.save(os.path.join(self.save_dir, f"best_labels.npy"), self.best_epoch_data["labels"])
+
+        with open(os.path.join(self.save_dir, "best_epoch.json"), "w") as f:
+            json.dump(self.best_epoch_data, f, indent=2)
+
+import numpy as np
+from sklearn.metrics import balanced_accuracy_score
+
+def compute_metrics_2(eval_pred):
+    logits, labels = eval_pred
+    preds = np.argmax(logits, axis=-1)
+    bal_acc = balanced_accuracy_score(labels, preds)
+    return {"balanced_accuracy": bal_acc}
 # =========================================================
 # 2. Data Collator
 # =========================================================
@@ -378,72 +437,113 @@ trainer = Trainer(
     eval_dataset=dataset_dict["validation"],
     tokenizer=processor.feature_extractor,
     data_collator=data_collator,
-    compute_metrics=compute_metrics,
-    callbacks=[EarlyStoppingCallback(early_stopping_patience=5)],
+    compute_metrics=compute_metrics_2,
+    callbacks=[EarlyStoppingCallback(early_stopping_patience=5), roc_callback],
 )
-print("[INFO] Trainer is ready.")
+roc_callback.trainer = trainer 
+print("[INFO] Skipping full evaluation metrics to save time/resources.")
 
-# =========================================================
-# 7. Training
-# =========================================================
-print("[INFO] Starting training...")
-trainer.train()
-print("[INFO] Training finished.")
+print("[INFO] Saving BEST EPOCH prediction data...")
+roc_callback.save_best()
 
-# =========================================================
-# 8. Evaluation & saving metrics
-# =========================================================
-def metrics_to_dataframe(metrics):
-    """Flatten metrics dict into a table (global + per-class)."""
-    rows = [{
-        "label": "GLOBAL",
-        "accuracy": metrics["accuracy"],
-        "balanced_accuracy": metrics["balanced_accuracy"],
-        "f1_macro": metrics["f1_macro"],
-        "mcc": metrics["mcc"],
-        "auc_macro": metrics["auc_macro"],
-        "mAP_macro": metrics["mAP_macro"],
-    }]
-    for lab, per in metrics["per_class"].items():
-        rows.append({
-            "label": lab,
-            "precision": per["precision"],
-            "recall": per["recall"],
-            "f1": per["f1"],
-            "specificity": per["specificity"],
-            "AP": per["AP"],
-            "AUC": per["AUC"],
-            "TP": per["TP"],
-            "FP": per["FP"],
-            "TN": per["TN"],
-            "FN": per["FN"],
-        })
-    return pd.DataFrame(rows)
-print("[INFO] Starting evaluation on train/val/test splits...")
-for split_name, split_ds in [("train", dataset_dict["train"]),
-                             ("val", dataset_dict["validation"]),
-                             ("test", dataset_dict["test"])]:
-    print(f"[INFO] Predicting on {split_name} split...")
-    preds = trainer.predict(split_ds)
-    logits, labels = preds.predictions, preds.label_ids
-    y_pred = np.argmax(logits, axis=1)
+# ===== ROC CURVE PLOT =====
+from sklearn.metrics import roc_curve, auc
+import matplotlib.pyplot as plt
 
-    metrics = compute_ser_metrics(
-        y_true=labels,
-        y_pred=y_pred,
-        y_score=logits,
-        labels=list(range(len(label2id))),
-    )
-    print(f"[INFO] Computed metrics for {split_name} split.")
+best_logits = np.load(os.path.join(OUTPUT_DIR, "roc", "best_logits.npy"))
+best_labels = np.load(os.path.join(OUTPUT_DIR, "roc", "best_labels.npy"))
 
-    df_metrics = pd.DataFrame(metrics_to_dataframe(metrics))
-    metrics_csv_path = os.path.join(OUTPUT_DIR_PERSISTENT, f"wav2vec2_{split_name}_metrics.csv")
-    df_metrics.to_csv(metrics_csv_path, index=False)
-    print(f"[INFO] Saved metrics CSV: {metrics_csv_path}")
+# prawdopodobieństwa
+probs = torch.softmax(torch.tensor(best_logits), dim=1).numpy()
 
-    summary_json_path = os.path.join(OUTPUT_DIR_PERSISTENT, f"wav2vec2_{split_name}_summary.json")
-    with open(summary_json_path, "w") as f:
-        json.dump(metrics, f, indent=2)
-    print(f"[INFO] Saved metrics JSON: {summary_json_path}")
+# Jeśli multi-class
+if probs.shape[1] > 2:
+    fpr, tpr, roc_auc = {}, {}, {}
+    plt.figure()
+    for cls in range(probs.shape[1]):
+        fpr[cls], tpr[cls], _ = roc_curve(best_labels == cls, probs[:, cls])
+        roc_auc[cls] = auc(fpr[cls], tpr[cls])
+        plt.plot(fpr[cls], tpr[cls], label=f"class {cls} AUC={roc_auc[cls]:.2f}")
 
-print("[INFO] All evaluation finished successfully.")
+else:  # binary
+    fpr, tpr, _ = roc_curve(best_labels, probs[:, 1])
+    roc_auc = auc(fpr, tpr)
+    plt.figure()
+    plt.plot(fpr, tpr, label=f"ROC curve (AUC={roc_auc:.2f})")
+
+plt.plot([0,1],[0,1],"--")
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.title("ROC Curve – Best Epoch")
+plt.legend()
+
+roc_path = os.path.join(OUTPUT_DIR, "roc", "roc_best_epoch.png")
+plt.savefig(roc_path)
+plt.close()
+print(f"[INFO] ROC curve saved: {roc_path}")
+# print("[INFO] Trainer is ready.")
+
+# # =========================================================
+# # 7. Training
+# # =========================================================
+# print("[INFO] Starting training...")
+# trainer.train()
+# print("[INFO] Training finished.")
+
+# # =========================================================
+# # 8. Evaluation & saving metrics
+# # =========================================================
+# def metrics_to_dataframe(metrics):
+#     """Flatten metrics dict into a table (global + per-class)."""
+#     rows = [{
+#         "label": "GLOBAL",
+#         "accuracy": metrics["accuracy"],
+#         "balanced_accuracy": metrics["balanced_accuracy"],
+#         "f1_macro": metrics["f1_macro"],
+#         "mcc": metrics["mcc"],
+#         "auc_macro": metrics["auc_macro"],
+#         "mAP_macro": metrics["mAP_macro"],
+#     }]
+#     for lab, per in metrics["per_class"].items():
+#         rows.append({
+#             "label": lab,
+#             "precision": per["precision"],
+#             "recall": per["recall"],
+#             "f1": per["f1"],
+#             "specificity": per["specificity"],
+#             "AP": per["AP"],
+#             "AUC": per["AUC"],
+#             "TP": per["TP"],
+#             "FP": per["FP"],
+#             "TN": per["TN"],
+#             "FN": per["FN"],
+#         })
+#     return pd.DataFrame(rows)
+# print("[INFO] Starting evaluation on train/val/test splits...")
+# for split_name, split_ds in [("train", dataset_dict["train"]),
+#                              ("val", dataset_dict["validation"]),
+#                              ("test", dataset_dict["test"])]:
+#     print(f"[INFO] Predicting on {split_name} split...")
+#     preds = trainer.predict(split_ds)
+#     logits, labels = preds.predictions, preds.label_ids
+#     y_pred = np.argmax(logits, axis=1)
+
+#     metrics = compute_ser_metrics(
+#         y_true=labels,
+#         y_pred=y_pred,
+#         y_score=logits,
+#         labels=list(range(len(label2id))),
+#     )
+#     print(f"[INFO] Computed metrics for {split_name} split.")
+
+#     df_metrics = pd.DataFrame(metrics_to_dataframe(metrics))
+#     metrics_csv_path = os.path.join(OUTPUT_DIR_PERSISTENT, f"wav2vec2_{split_name}_metrics.csv")
+#     df_metrics.to_csv(metrics_csv_path, index=False)
+#     print(f"[INFO] Saved metrics CSV: {metrics_csv_path}")
+
+#     summary_json_path = os.path.join(OUTPUT_DIR_PERSISTENT, f"wav2vec2_{split_name}_summary.json")
+#     with open(summary_json_path, "w") as f:
+#         json.dump(metrics, f, indent=2)
+#     print(f"[INFO] Saved metrics JSON: {summary_json_path}")
+
+# print("[INFO] All evaluation finished successfully.")
