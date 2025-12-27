@@ -208,7 +208,7 @@ print(f"[INFO] Liczba próbek: {len(df)}")
 # =========================================================
 # 3️⃣ Zdefiniuj emocje (tylko 4 klasy)
 # =========================================================
-emotions = ["neutral", "happy", "sad", "disgust"]
+emotions = ["neutral", "happy", "sad", "angry"]
 
 # Mapowanie etykiet tekstowych na ID
 label2id = {emotion: idx for idx, emotion in enumerate(emotions)}
