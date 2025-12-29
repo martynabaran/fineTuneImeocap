@@ -105,7 +105,7 @@ class BestEpochRocCollector(TrainerCallback):
             return control
 
         print(f"[CALLBACK] metrics received: {metrics}")
-	bal_acc = metrics.get("eval_balanced_accuracy", None)
+        bal_acc = metrics.get("eval_balanced_accuracy", None)
 
         #bal_acc = metrics.get("balanced_accuracy", None)
         if bal_acc is None:
@@ -145,24 +145,46 @@ class BestEpochRocCollector(TrainerCallback):
 
     def save_best(self):
         print("[CALLBACK] save_best() called.")
+    
         if self.best_epoch_data is None:
             print("[CALLBACK]  No best_epoch_data → nothing to save.")
             return
-
+    
+        # --- SAFE JSON CONVERSION ---
+        # Konwersja wszystkich numpy → list
+        safe_data = {}
+        for k, v in self.best_epoch_data.items():
+            if hasattr(v, "tolist"):   # numpy, tensors itp.
+                safe_data[k] = v.tolist()
+            else:
+                safe_data[k] = v
+    
+        # --- SAVE NUMPY FILES ---
         print("[CALLBACK] Saving NUMPY files for best epoch...")
-
-        np.save(os.path.join(self.save_dir, "best_logits.npy"), self.best_epoch_data["logits"])
-        np.save(os.path.join(self.save_dir, "best_labels.npy"), self.best_epoch_data["labels"])
-
+    
+        # Save logits/labels only if present
+        if "logits" in self.best_epoch_data:
+            np.save(os.path.join(self.save_dir, "best_logits.npy"), self.best_epoch_data["logits"])
+        if "labels" in self.best_epoch_data:
+            np.save(os.path.join(self.save_dir, "best_labels.npy"), self.best_epoch_data["labels"])
+    
+        # --- SAVE JSON ---
         with open(os.path.join(self.save_dir, "best_epoch.json"), "w") as f:
-            json.dump(self.best_epoch_data, f, indent=2)
-
+            json.dump(safe_data, f, indent=2)
+    
+        # --- PRINT SUMMARY ---
+        epoch = safe_data.get("epoch", "-")
+        bal = safe_data.get("balanced_accuracy", None)
+        bal_msg = f"{bal:.4f}" if isinstance(bal, (int, float)) else str(bal)
+    
         print(
             f"[CALLBACK] BEST EPOCH SAVED:\n"
-            f"    epoch = {self.best_epoch_data['epoch']}\n"
-            f"    bal_acc = {self.best_epoch_data['balanced_accuracy']:.4f}\n"
+            f"    epoch = {epoch}\n"
+            f"    bal_acc = {bal_msg}\n"
             f"    path = {self.save_dir}"
         )
+
+
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -390,3 +412,4 @@ roc_path = os.path.join(OUTPUT_DIR, "roc", "roc_best_epoch.png")
 plt.savefig(roc_path)
 plt.close()
 print(f"[INFO] ROC curve saved: {roc_path}")
+
