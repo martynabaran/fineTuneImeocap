@@ -57,6 +57,7 @@ CSV_PATH = os.path.join(RAVDESS_DIR, "metadata.csv")
 OUTPUT_DIR = os.path.join("/net/tscratch/people/plgmarbar/iemocap_4", "wav2vec2_checkpoints_roccurve")
 OUTPUT_DIR_PERSISTENT=OUTPUT_DIR
 os.makedirs(OUTPUT_DIR_PERSISTENT, exist_ok=True)
+os.makedirs(os.path.join(OUTPUT_DIR, "roc"), exist_ok=True)
 
 os.makedirs(HF_CACHE, exist_ok=True)
 os.makedirs(DATASET_DIR, exist_ok=True)
@@ -401,6 +402,7 @@ training_args = TrainingArguments(
     seed=42,
     fp16=torch.cuda.is_available(),
 )
+roc_callback = BestEpochRocCollector(trainer=None, dataset_dict=dataset_dict, save_dir=os.path.join(OUTPUT_DIR, "roc"))
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
@@ -442,6 +444,9 @@ trainer = Trainer(
 )
 roc_callback.trainer = trainer 
 print("[INFO] Skipping full evaluation metrics to save time/resources.")
+print("[INFO] Starting training...")
+trainer.train()
+print("[INFO] Training finished.")
 
 print("[INFO] Saving BEST EPOCH prediction data...")
 roc_callback.save_best()
